@@ -1,0 +1,80 @@
+name: Update Clash Config
+
+on:
+  schedule:
+    # 每2小时运行一次（UTC时间，北京时间需要+8）
+    - cron: '0 */2 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  update-config:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Run merge script
+        run: python merge_clash.py
+
+      - name: Read merged config
+        id: config
+        run: |
+          echo "content<<EOF" >> $GITHUB_OUTPUT
+          cat merged_config.yaml >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create or update Gist
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GIST_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const configContent = fs.readFileSync('merged_config.yaml', 'utf8');
+
+            // 检查是否已存在 Gist
+            let gistId = '${{ secrets.GIST_ID }}';
+
+            if (!gistId) {
+              // 创建新的 Gist
+              const gist = await github.rest.gists.create({
+                description: 'Clash Merged Config - Auto Updated',
+                public: false,
+                files: {
+                  'merged_config.yaml': {
+                    content: configContent
+                  }
+                }
+              });
+              gistId = gist.data.id;
+              console.log(`Created new Gist: ${gistId}`);
+              console.log(`Gist URL: ${gist.data.html_url}`);
+              // 需要手动将 GIST_ID 添加到仓库 secrets
+              core.setOutput('gist_id', gistId);
+            } else {
+              // 更新现有 Gist
+              await github.rest.gists.update({
+                gist_id: gistId,
+                files: {
+                  'merged_config.yaml': {
+                    content: configContent
+                  }
+                }
+              });
+              console.log(`Updated Gist: ${gistId}`);
+            }
+
+      - name: Upload config as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-config
+          path: merged_config.yaml
+          retention-days: 7
