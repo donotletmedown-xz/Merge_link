@@ -3,6 +3,7 @@
 合并多个 Clash 配置文件的代理节点。
 从 BASE_URL 获取基础配置（规则、代理组），
 从 NODE_URLS 获取所有节点，合并后生成新文件。
+支持 VLESS 分享链接自动转换。
 兼容 Windows 和 Ubuntu。
 """
 
@@ -13,6 +14,7 @@ import ssl
 import urllib.request
 import urllib.error
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs, unquote
 
 # Windows 终端可能使用 GBK，强制 UTF-8 输出
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -29,14 +31,15 @@ except ImportError:
 # 优先从环境变量读取，否则使用默认值
 BASE_URL = os.environ.get("BASE_URL", "")
 NODE_URLS = [url.strip() for url in os.environ.get("NODE_URLS", "").split(",") if url.strip()]
+VLESS_LINKS = [link.strip() for link in os.environ.get("VLESS_LINKS", "").split(",") if link.strip()]
 OUTPUT_FILE = "merged_config.yaml"
 
 # 如果环境变量为空，提示用户设置
 if not BASE_URL:
     print("错误: 请设置 BASE_URL 环境变量")
     sys.exit(1)
-if not NODE_URLS:
-    print("错误: 请设置 NODE_URLS 环境变量")
+if not NODE_URLS and not VLESS_LINKS:
+    print("错误: 请设置 NODE_URLS 或 VLESS_LINKS 环境变量（至少一个）")
     sys.exit(1)
 
 
@@ -57,6 +60,107 @@ def parse_yaml(text: str) -> dict:
     if not isinstance(data, dict):
         raise ValueError("YAML 内容不是有效的字典结构")
     return data
+
+
+def parse_vless_uri(uri: str) -> dict:
+    """
+    将 VLESS 分享链接解析为 Clash Meta 代理配置字典。
+
+    支持格式: vless://UUID@SERVER:PORT?params#NAME
+    支持传输: tcp / ws / grpc / h2 / quic
+    支持安全: none / tls / reality
+    """
+    # 分离 fragment（节点名）
+    if "#" in uri:
+        uri_part, name = uri.rsplit("#", 1)
+        name = unquote(name)
+    else:
+        uri_part = uri
+        name = "vless-node"
+
+    parsed = urlparse(uri_part)
+    uuid = parsed.username or ""
+    server = parsed.hostname or ""
+    port = parsed.port or 443
+
+    if not uuid or not server:
+        raise ValueError(f"无效的 VLESS 链接，缺少 UUID 或服务器地址: {uri[:80]}...")
+
+    params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
+    # 基础配置
+    proxy = {
+        "name": name,
+        "type": "vless",
+        "server": server,
+        "port": port,
+        "uuid": uuid,
+        "udp": True,
+    }
+
+    # 传输层类型
+    transport = params.get("type", "tcp")
+
+    # 安全层
+    security = params.get("security", "none")
+
+    if security == "reality":
+        proxy["tls"] = True
+        proxy["skip-cert-verify"] = False
+        if params.get("sni"):
+            proxy["servername"] = params["sni"]
+        if params.get("fp"):
+            proxy["client-fingerprint"] = params["fp"]
+        reality_opts = {}
+        if params.get("pbk"):
+            reality_opts["public-key"] = params["pbk"]
+        if params.get("sid"):
+            reality_opts["short-id"] = params["sid"]
+        if reality_opts:
+            proxy["reality-opts"] = reality_opts
+        if params.get("flow"):
+            proxy["flow"] = params["flow"]
+
+    elif security == "tls":
+        proxy["tls"] = True
+        proxy["skip-cert-verify"] = params.get("allowInsecure", "0") == "1"
+        if params.get("sni"):
+            proxy["servername"] = params["sni"]
+        elif params.get("host"):
+            proxy["servername"] = params["host"]
+        if params.get("fp"):
+            proxy["client-fingerprint"] = params["fp"]
+        if params.get("alpn"):
+            proxy["alpn"] = params["alpn"].split(",")
+
+    # 传输层配置
+    if transport != "tcp":
+        proxy["network"] = transport
+
+    if transport == "ws":
+        ws_opts = {}
+        if params.get("path"):
+            ws_opts["path"] = unquote(params["path"])
+        host = params.get("host", "")
+        if host:
+            ws_opts["headers"] = {"Host": unquote(host)}
+        if ws_opts:
+            proxy["ws-opts"] = ws_opts
+
+    elif transport == "grpc":
+        if params.get("serviceName"):
+            proxy["grpc-opts"] = {"grpc-service-name": params["serviceName"]}
+
+    elif transport == "h2":
+        h2_opts = {}
+        if params.get("path"):
+            h2_opts["path"] = unquote(params["path"])
+        if params.get("host"):
+            h2_opts["host"] = [unquote(params["host"])]
+        if h2_opts:
+            proxy["h2-opts"] = h2_opts
+
+    return proxy
 
 
 def merge_proxies(base: dict, node_config: dict) -> None:
@@ -138,18 +242,35 @@ def main() -> None:
         sys.exit(1)
 
     # 2. 获取并合并所有 NODE_URL
-    print(f"\n[2/2] 正在获取并合并节点...")
-    for i, node_url in enumerate(NODE_URLS, 1):
-        print(f"\n  [{i}/{len(NODE_URLS)}] URL: {node_url}")
-        try:
-            node_text = fetch_url(node_url)
-            node_config = parse_yaml(node_text)
-            node_count = len(node_config.get("proxies", node_config.get("Proxy", [])))
-            print(f"    获取到 {node_count} 个节点" if node_count else "    单节点配置")
-            merge_proxies(base_config, node_config)
-        except Exception as e:
-            print(f"    获取失败: {e}，跳过")
-            continue
+    if NODE_URLS:
+        print(f"\n[2/?] 正在获取并合并节点链接...")
+        for i, node_url in enumerate(NODE_URLS, 1):
+            print(f"\n  [{i}/{len(NODE_URLS)}] URL: {node_url}")
+            try:
+                node_text = fetch_url(node_url)
+                node_config = parse_yaml(node_text)
+                node_count = len(node_config.get("proxies", node_config.get("Proxy", [])))
+                print(f"    获取到 {node_count} 个节点" if node_count else "    单节点配置")
+                merge_proxies(base_config, node_config)
+            except Exception as e:
+                print(f"    获取失败: {e}，跳过")
+                continue
+
+    # 3. 解析并合并 VLESS 分享链接
+    if VLESS_LINKS:
+        print(f"\n[3/?] 正在解析 VLESS 分享链接...")
+        vless_proxies = []
+        for i, link in enumerate(VLESS_LINKS, 1):
+            print(f"\n  [{i}/{len(VLESS_LINKS)}] {link[:60]}...")
+            try:
+                proxy = parse_vless_uri(link)
+                vless_proxies.append(proxy)
+                print(f"    ✓ {proxy['name']} → {proxy['server']}:{proxy['port']}")
+            except Exception as e:
+                print(f"    ✗ 解析失败: {e}")
+                continue
+        if vless_proxies:
+            merge_proxies(base_config, {"proxies": vless_proxies})
 
     # 输出统计
     final_proxies = base_config.get("proxies", base_config.get("Proxy", []))

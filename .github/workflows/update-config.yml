@@ -26,6 +26,7 @@ jobs:
         env:
           BASE_URL: ${{ secrets.BASE_URL }}
           NODE_URLS: ${{ secrets.NODE_URLS }}
+          VLESS_LINKS: ${{ secrets.VLESS_LINKS }}
         run: python merge_clash.py
 
       - name: Update Gist
