@@ -6,9 +6,6 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch:  # 允许手动触发
 
-permissions:
-  contents: write
-
 jobs:
   update-config:
     runs-on: ubuntu-latest
@@ -31,13 +28,78 @@ jobs:
           NODE_URLS: ${{ secrets.NODE_URLS }}
         run: python merge_clash.py
 
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest-config
-          name: Clash Config - ${{ github.run_number }}
-          body: |
-            自动更新的 Clash 配置文件
-            更新时间: ${{ github.event.head_commit.timestamp || '手动触发' }}
-          files: merged_config.yaml
-          make_latest: true
+      - name: Update Gist
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+        run: |
+          # 读取配置并转义为 JSON 字符串
+          CONTENT=$(jq -Rs . < merged_config.yaml)
+
+          if [ -z "$GIST_ID" ]; then
+            # 创建新的公开 Gist
+            RESPONSE=$(curl -s -X POST \
+              -H "Authorization: token $GIST_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -d "{
+                \"description\": \"Clash Config\",
+                \"public\": true,
+                \"files\": {
+                  \"clash_config.yaml\": {
+                    \"content\": $CONTENT
+                  }
+                }
+              }" \
+              https://api.github.com/gists)
+
+            # 检查错误
+            ERROR=$(echo "$RESPONSE" | jq -r '.message // empty')
+            if [ -n "$ERROR" ]; then
+              echo "❌ API Error: $ERROR"
+              echo "Response: $RESPONSE"
+              exit 1
+            fi
+
+            NEW_ID=$(echo "$RESPONSE" | jq -r '.id')
+            HTML_URL=$(echo "$RESPONSE" | jq -r '.html_url')
+            OWNER=$(echo "$RESPONSE" | jq -r '.owner.login')
+            RAW_URL="https://gist.githubusercontent.com/$OWNER/$NEW_ID/raw/clash_config.yaml"
+
+            echo "✅ Created new Gist!"
+            echo ""
+            echo "=========================================="
+            echo "📎 Gist ID: $NEW_ID"
+            echo "🔗 Gist URL: $HTML_URL"
+            echo ""
+            echo "📥 Clash 订阅链接:"
+            echo "$RAW_URL"
+            echo "=========================================="
+            echo ""
+            echo "⚠️  请添加到 Repository Secrets:"
+            echo "   Name: GIST_ID"
+            echo "   Value: $NEW_ID"
+          else
+            # 更新现有 Gist
+            RESPONSE=$(curl -s -X PATCH \
+              -H "Authorization: token $GIST_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -d "{
+                \"files\": {
+                  \"clash_config.yaml\": {
+                    \"content\": $CONTENT
+                  }
+                }
+              }" \
+              https://api.github.com/gists/$GIST_ID)
+
+            ERROR=$(echo "$RESPONSE" | jq -r '.message // empty')
+            if [ -n "$ERROR" ]; then
+              echo "❌ API Error: $ERROR"
+              exit 1
+            fi
+
+            echo "✅ Updated Gist: $GIST_ID"
+            echo ""
+            echo "📥 Clash 订阅链接:"
+            echo "https://gist.githubusercontent.com/raw/$GIST_ID/raw/clash_config.yaml"
+          fi
