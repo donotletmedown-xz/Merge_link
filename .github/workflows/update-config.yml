@@ -7,7 +7,7 @@ on:
   workflow_dispatch:  # 允许手动触发
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   update-config:
@@ -28,68 +28,33 @@ jobs:
       - name: Run merge script
         run: python merge_clash.py
 
-      - name: Upload config to Gist
-        env:
-          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
-          GIST_ID: ${{ secrets.GIST_ID }}
-        run: |
-          # 读取配置内容并转义
-          CONTENT=$(cat merged_config.yaml | jq -Rs .)
-
-          if [ -z "$GIST_ID" ]; then
-            # 创建新的 Gist
-            RESPONSE=$(curl -s -X POST \
-              -H "Authorization: token $GIST_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"description\": \"Clash Merged Config - Auto Updated\",
-                \"public\": false,
-                \"files\": {
-                  \"merged_config.yaml\": {
-                    \"content\": $CONTENT
-                  }
-                }
-              }" \
-              https://api.github.com/gists)
-
-            echo "API Response: $RESPONSE"
-
-            GIST_ID=$(echo "$RESPONSE" | jq -r '.id // empty')
-            GIST_URL=$(echo "$RESPONSE" | jq -r '.html_url // empty')
-
-            if [ -n "$GIST_ID" ]; then
-              echo "✅ Created new Gist!"
-              echo "📎 Gist ID: $GIST_ID"
-              echo "🔗 Gist URL: $GIST_URL"
-              echo ""
-              echo "⚠️  请将以下信息添加到仓库 Secrets:"
-              echo "   Name: GIST_ID"
-              echo "   Value: $GIST_ID"
-            else
-              echo "❌ 创建 Gist 失败，请检查 GIST_TOKEN 是否有 gist 权限"
-              exit 1
-            fi
-          else
-            # 更新现有 Gist
-            RESPONSE=$(curl -s -X PATCH \
-              -H "Authorization: token $GIST_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"files\": {
-                  \"merged_config.yaml\": {
-                    \"content\": $CONTENT
-                  }
-                }
-              }" \
-              https://api.github.com/gists/$GIST_ID)
-
-            echo "API Response: $RESPONSE"
-            echo "✅ Updated Gist: $GIST_ID"
-          fi
-
-      - name: Upload config as artifact
-        uses: actions/upload-artifact@v4
+      - name: Delete old release
+        uses: actions/github-script@v7
         with:
-          name: merged-config
-          path: merged_config.yaml
-          retention-days: 7
+          script: |
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: 'latest-config'
+              });
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.data.id
+              });
+              console.log('Deleted old release');
+            } catch (e) {
+              console.log('No existing release to delete');
+            }
+
+      - name: Create new release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-config
+          name: Clash Config - ${{ github.run_number }}
+          body: |
+            自动更新的 Clash 配置文件
+            更新时间: ${{ github.event.head_commit.timestamp || '手动触发' }}
+          files: merged_config.yaml
+          make_latest: true
