@@ -7,6 +7,7 @@
 """
 
 import io
+import os
 import sys
 import ssl
 import urllib.request
@@ -25,12 +26,18 @@ except ImportError:
     sys.exit(1)
 
 
-BASE_URL = "https://app.mitce.net/?sid=481362&token=srvcmhfb&app=clashverge"
-NODE_URLS = [
-    "https://144.225.187.179:2096/clash/kx4aldko08futa52",
-    # 在这里添加更多 NODE_URL，每行一个
-]
+# 优先从环境变量读取，否则使用默认值
+BASE_URL = os.environ.get("BASE_URL", "")
+NODE_URLS = [url.strip() for url in os.environ.get("NODE_URLS", "").split(",") if url.strip()]
 OUTPUT_FILE = "merged_config.yaml"
+
+# 如果环境变量为空，提示用户设置
+if not BASE_URL:
+    print("错误: 请设置 BASE_URL 环境变量")
+    sys.exit(1)
+if not NODE_URLS:
+    print("错误: 请设置 NODE_URLS 环境变量")
+    sys.exit(1)
 
 
 def fetch_url(url: str) -> str:
