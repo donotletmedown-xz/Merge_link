@@ -12,6 +12,7 @@ permissions:
 jobs:
   update-config:
     runs-on: ubuntu-latest
+    environment: GIST_TOKEN
 
     steps:
       - name: Checkout repository
