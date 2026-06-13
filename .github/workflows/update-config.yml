@@ -6,6 +6,9 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch:  # 允许手动触发
 
+permissions:
+  contents: read
+
 jobs:
   update-config:
     runs-on: ubuntu-latest
@@ -25,52 +28,61 @@ jobs:
       - name: Run merge script
         run: python merge_clash.py
 
-      - name: Read merged config
-        id: config
+      - name: Upload config to Gist
+        env:
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
         run: |
-          echo "content<<EOF" >> $GITHUB_OUTPUT
-          cat merged_config.yaml >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # 读取配置内容
+          CONTENT=$(cat merged_config.yaml)
 
-      - name: Create or update Gist
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GIST_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const configContent = fs.readFileSync('merged_config.yaml', 'utf8');
-
-            // 检查是否已存在 Gist
-            let gistId = '${{ secrets.GIST_ID }}';
-
-            if (!gistId) {
-              // 创建新的 Gist
-              const gist = await github.rest.gists.create({
-                description: 'Clash Merged Config - Auto Updated',
-                public: false,
-                files: {
-                  'merged_config.yaml': {
-                    content: configContent
+          if [ -z "$GIST_ID" ]; then
+            # 创建新的 Gist
+            RESPONSE=$(curl -s -X POST \
+              -H "Authorization: token $GIST_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"description\": \"Clash Merged Config - Auto Updated\",
+                \"public\": false,
+                \"files\": {
+                  \"merged_config.yaml\": {
+                    \"content\": $(echo "$CONTENT" | jq -Rs .)
                   }
                 }
-              });
-              gistId = gist.data.id;
-              console.log(`Created new Gist: ${gistId}`);
-              console.log(`Gist URL: ${gist.data.html_url}`);
-              // 需要手动将 GIST_ID 添加到仓库 secrets
-              core.setOutput('gist_id', gistId);
-            } else {
-              // 更新现有 Gist
-              await github.rest.gists.update({
-                gist_id: gistId,
-                files: {
-                  'merged_config.yaml': {
-                    content: configContent
+              }" \
+              https://api.github.com/gists)
+
+            GIST_ID=$(echo "$RESPONSE" | jq -r '.id')
+            GIST_URL=$(echo "$RESPONSE" | jq -r '.html_url')
+
+            echo "✅ Created new Gist!"
+            echo "📎 Gist ID: $GIST_ID"
+            echo "🔗 Gist URL: $GIST_URL"
+            echo ""
+            echo "⚠️  请将以下信息添加到仓库 Secrets:"
+            echo "   Name: GIST_ID"
+            echo "   Value: $GIST_ID"
+          else
+            # 更新现有 Gist
+            curl -s -X PATCH \
+              -H "Authorization: token $GIST_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"files\": {
+                  \"merged_config.yaml\": {
+                    \"content\": $(echo "$CONTENT" | jq -Rs .)
                   }
                 }
-              });
-              console.log(`Updated Gist: ${gistId}`);
-            }
+              }" \
+              https://api.github.com/gists/$GIST_ID
+
+            echo "✅ Updated Gist: $GIST_ID"
+          fi
+
+          # 输出 Gist raw URL
+          echo ""
+          echo "📥 配置文件下载链接:"
+          echo "https://gist.githubusercontent.com/raw/$GIST_ID/merged_config.yaml"
 
       - name: Upload config as artifact
         uses: actions/upload-artifact@v4
