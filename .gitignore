@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 merged_config.yaml
 merge_clash.log
+node_url.yaml
