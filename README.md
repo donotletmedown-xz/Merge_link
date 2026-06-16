@@ -220,6 +220,7 @@ bash trigger_actions.sh --uninstall
 Merge_link/
 ├── merge_clash.py              # 核心合并脚本
 ├── setup_cron.sh               # VPS 直接部署脚本
+├── setup_vnstat.sh             # vnstat 流量统计一键部署脚本
 ├── trigger_actions.sh          # VPS 远程触发 Actions 脚本
 ├── .github/
 │   └── workflows/
@@ -250,6 +251,42 @@ V2RAY_SUB_URLS ──────────┘
 4. 遍历 `V2RAY_SUB_URLS`，获取订阅内容并 base64 解码，解析 VLESS 链接，创建 "vps" 代理组
 5. 按 `name` 去重，新节点添加到最大的 `proxy-group`
 6. 输出 `merged_config.yaml`，上传至 Gist
+
+## 附：vnstat 流量统计
+
+`setup_vnstat.sh` 提供一键部署每小时流量统计功能。
+
+### 功能
+
+- 自动检测并安装 vnstat（支持 apt/yum/dnf/pacman）
+- 自动检测网络接口
+- 每小时统计流量增量和当日累计
+- 日志写入 `/var/log/traffic_hourly.log`
+
+### 使用方法
+
+```bash
+chmod +x setup_vnstat.sh
+sudo ./setup_vnstat.sh
+```
+
+### 部署后
+
+| 命令 | 说明 |
+|------|------|
+| `vnstat -l` | 查看实时流量 |
+| `vnstat -d` | 查看今日统计 |
+| `vnstat -m` | 查看本月统计 |
+| `vnstat -h` | 查看小时统计 |
+| `tail -f /var/log/traffic_hourly.log` | 查看日志 |
+
+### 日志格式
+
+```
+2024-01-15 14:00 | 本小时增量: RX +12.34MB / TX +5.67MB | 当日累计: RX: 1024.00 MB (1.00 GB) | TX: 512.00 MB (0.50 GB)
+```
+
+---
 
 ## 常见问题
 
