@@ -4,3 +4,4 @@ __pycache__/
 merged_config.yaml
 merge_clash.log
 node_url.yaml
+.github_token
