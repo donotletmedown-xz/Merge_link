@@ -1,12 +1,13 @@
 # Merge_link
 
-Clash / Mihomo 代理配置合并工具。从远程 URL 获取基础配置（规则、代理组、DNS），再从多个节点 URL 和 VLESS 分享链接中提取代理节点，合并输出为单一 YAML 配置文件，并可自动上传至 GitHub Gist 作为订阅链接使用。
+Clash / Mihomo 代理配置合并工具。从远程 URL 获取基础配置（规则、代理组、DNS），再从多个节点 URL、VLESS 分享链接和 v2ray 订阅链接中提取代理节点，合并输出为单一 YAML 配置文件，并可自动上传至 GitHub Gist 作为订阅链接使用。
 
 ## 功能特性
 
 - 从远程 URL 获取基础 Clash 配置作为骨架
 - 支持从多个节点 URL 合并代理节点
 - 支持 VLESS 分享链接直接解析为 Clash Meta 代理节点
+- 支持 v2ray 订阅链接（base64 编码的 VLESS 链接列表），自动创建 "vps" 代理组
 - 自动按 name 去重，新节点自动添加到最大的 proxy-group
 - 兼容 Clash 和 Mihomo 的键名格式（`proxies`/`Proxy`、`proxy-groups`/`ProxyGroup`）
 - VLESS 支持传输层：tcp / ws / grpc / h2 / quic
@@ -63,6 +64,7 @@ Actions 运行后需要将合并结果上传到 GitHub Gist，这需要一个具
 | `BASE_URL` | `https://example.com/base.yaml` | 基础 Clash 配置 URL（提供规则、代理组、DNS） |
 | `NODE_URLS` | `https://a.com/nodes.yaml,https://b.com/nodes.yaml` | 逗号分隔的节点配置 URL 列表 |
 | `VLESS_LINKS` | `vless://uuid@server:port?params#name` | 逗号分隔的 VLESS 分享链接 |
+| `V2RAY_SUB_URLS` | `https://sub.example.com/sub` | 逗号分隔的 v2ray 订阅链接（返回 base64 编码的 VLESS 链接列表） |
 | `GIST_TOKEN` | `github_pat_xxx...` | 第 2 步获取的 GitHub Token |
 | `GIST_ID` | 留空 | 首次运行会自动创建 Gist 并输出 ID |
 
@@ -74,7 +76,7 @@ Actions 运行后需要将合并结果上传到 GitHub Gist，这需要一个具
 5. 重复以上步骤添加其他 Secret
 
 > [!NOTE]
-> `NODE_URLS` 和 `VLESS_LINKS` 至少需要设置一个。如果只有 VLESS 链接不需要节点 URL，可以不设置 `NODE_URLS`，反之亦然。
+> `NODE_URLS`、`VLESS_LINKS` 和 `V2RAY_SUB_URLS` 至少需要设置一个。
 
 ### 第 4 步：首次运行
 
@@ -118,6 +120,7 @@ cd Merge_link
 export BASE_URL="https://example.com/base.yaml"
 export NODE_URLS="https://a.com/nodes.yaml,https://b.com/nodes.yaml"
 export VLESS_LINKS="vless://uuid@server:port?params#name"
+export V2RAY_SUB_URLS="https://sub.example.com/sub"
 ```
 
 > [!TIP]
@@ -207,8 +210,9 @@ bash trigger_actions.sh --uninstall
 | 变量 | 必需 | 说明 |
 |------|------|------|
 | `BASE_URL` | 是 | 基础 Clash 配置 URL，提供规则、代理组、DNS 等骨架 |
-| `NODE_URLS` | 二选一 | 逗号分隔的节点配置 URL，每个 URL 指向一个包含 `proxies` 的 YAML |
-| `VLESS_LINKS` | 二选一 | 逗号分隔的 VLESS 分享链接（`vless://uuid@server:port?params#name`） |
+| `NODE_URLS` | 三选一 | 逗号分隔的节点配置 URL，每个 URL 指向一个包含 `proxies` 的 YAML |
+| `VLESS_LINKS` | 三选一 | 逗号分隔的 VLESS 分享链接（`vless://uuid@server:port?params#name`） |
+| `V2RAY_SUB_URLS` | 三选一 | 逗号分隔的 v2ray 订阅链接，返回 base64 编码的 VLESS 链接列表，自动创建 "vps" 代理组 |
 
 ## 项目结构
 
@@ -231,21 +235,31 @@ Merge_link/
 BASE_URL ──→ 基础配置（规则、代理组、DNS）
                 │
 NODE_URLS ──→ 节点配置 ──┐
-                         ├──→ 合并去重 ──→ merged_config.yaml ──→ Gist（订阅链接）
-VLESS_LINKS → VLESS 解析 ─┘
+                         │
+VLESS_LINKS → VLESS 解析 ─┼──→ 合并去重 ──→ merged_config.yaml ──→ Gist（订阅链接）
+                         │
+V2RAY_SUB_URLS ──────────┘
+    ↓
+    base64 解码 → VLESS 链接列表 → 解析合并
+    同时创建 "vps" 代理组
 ```
 
 1. 从 `BASE_URL` 获取基础配置作为骨架
 2. 遍历 `NODE_URLS`，逐个获取并提取 `proxies` 节点
 3. 遍历 `VLESS_LINKS`，解析为 Clash Meta 代理字典
-4. 按 `name` 去重，新节点添加到最大的 `proxy-group`
-5. 输出 `merged_config.yaml`，上传至 Gist
+4. 遍历 `V2RAY_SUB_URLS`，获取订阅内容并 base64 解码，解析 VLESS 链接，创建 "vps" 代理组
+5. 按 `name` 去重，新节点添加到最大的 `proxy-group`
+6. 输出 `merged_config.yaml`，上传至 Gist
 
 ## 常见问题
 
 **Q: 只有 VLESS 链接，没有节点 URL 怎么办？**
 
 只设置 `VLESS_LINKS` 即可，`NODE_URLS` 可以不设置或留空。
+
+**Q: v2ray 订阅链接是什么？**
+
+v2ray 订阅链接返回 base64 编码的 VLESS 链接列表。设置 `V2RAY_SUB_URLS` 后，脚本会自动获取、解码、解析，并创建一个名为 "vps" 的代理组存放这些节点。
 
 **Q: Actions 运行失败怎么办？**
 
