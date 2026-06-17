@@ -189,33 +189,21 @@ def parse_vless_uri(uri: str) -> dict:
 
 def deduplicate_name(name: str, source_type: str, existing_names: set) -> str:
     """
-    为重名节点添加来源后缀（固定后缀，重复时加编号）。
-    NODE_URLS → -node, -node-2, -node-3, ...
-    VLESS_LINKS → -vless, -vless-2, -vless-3, ...
-    V2RAY_SUB_URLS → -v2, -v2-2, -v2-3, ...
+    为重名节点自动添加编号后缀：-01, -02, -03, ...
+    第一个重名加 -01，第二个加 -02，依此类推。
     """
-    suffix_map = {
-        "node": "-node",
-        "vless": "-vless",
-        "v2": "-v2",
-    }
-    suffix = suffix_map.get(source_type, "-node")
-    # 第一个不加编号，第二个开始加 -2, -3, ...
-    new_name = f"{name}{suffix}"
-    if new_name not in existing_names:
-        return new_name
-    counter = 2
+    counter = 1
     while True:
-        new_name = f"{name}{suffix}-{counter}"
+        new_name = f"{name}-{counter:02d}"
         if new_name not in existing_names:
             return new_name
         counter += 1
 
 
-def merge_proxies(base: dict, node_config: dict, source_type: str = "node") -> list:
+def merge_proxies(base: dict, node_config: dict, source_type: str = "node") -> tuple:
     """
     将 node_config 中的 proxies 合并到 base 中（按 name 去重）。
-    返回新增的节点名称列表。
+    返回 (新增的节点名称列表, 重名映射 {旧名: 新名})。
     """
     new_proxies = node_config.get("proxies") or node_config.get("Proxy") or []
     if not new_proxies:
@@ -223,12 +211,13 @@ def merge_proxies(base: dict, node_config: dict, source_type: str = "node") -> l
             new_proxies = [node_config]
         else:
             print("警告: 链接中未找到任何代理节点")
-            return []
+            return [], {}
 
     base_proxies = base.get("proxies") or base.get("Proxy") or []
     existing_names = {p.get("name") for p in base_proxies}
 
     added = []
+    name_map = {}  # 重名节点的旧名 → 新名映射
     for proxy in new_proxies:
         name = proxy.get("name", "")
         if name in existing_names:
@@ -236,6 +225,7 @@ def merge_proxies(base: dict, node_config: dict, source_type: str = "node") -> l
             new_name = deduplicate_name(name, source_type, existing_names)
             proxy["name"] = new_name
             print(f"  重名节点已重命名: {name} → {new_name}")
+            name_map[name] = new_name
             name = new_name
         base_proxies.append(proxy)
         existing_names.add(name)
@@ -253,7 +243,7 @@ def merge_proxies(base: dict, node_config: dict, source_type: str = "node") -> l
     else:
         print(f"新增 {len(added)} 个节点: {', '.join(added)}")
 
-    return added
+    return added, name_map
 
 
 def fetch_v2ray_sub(url: str) -> list:
@@ -316,6 +306,74 @@ def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str
         base["proxy-groups"] = groups
 
     return source_name
+
+
+def merge_remote_proxy_groups(base: dict, remote_groups: list, name_map: dict) -> list:
+    """
+    将远程配置自带的 proxy-groups 合并到 base 中。
+    - 所有远程分组统一添加 "node-" 前缀，避免与脚本分组（node-手选等）和模板分组冲突。
+    - name_map: 重名节点的 {旧名: 新名} 映射，用于修正分组内的 proxies 引用。
+    - 多个远程配置有同名分组时，后续加编号去重。
+    返回实际合并的分组名称列表。
+    """
+    if not remote_groups:
+        return []
+
+    base_groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
+    existing_names = {g.get("name") for g in base_groups}
+
+    # 第一遍：确定所有远程分组的新名字，构建分组名映射
+    group_remap = {}  # 远程分组原始名 → 新名
+    for group in remote_groups:
+        old_name = group.get("name", "")
+        if not old_name:
+            continue
+        new_name = f"node-{old_name}"
+        counter = 2
+        while new_name in existing_names:
+            new_name = f"node-{old_name}-{counter}"
+            counter += 1
+        group_remap[old_name] = new_name
+        existing_names.add(new_name)
+
+    # 合并节点重名映射和分组名映射，用于统一修正 proxies 引用
+    full_remap = {}
+    if name_map:
+        full_remap.update(name_map)
+    full_remap.update(group_remap)
+
+    # 第二遍：重命名分组 + 修正所有 proxies 引用
+    added_names = []
+    for group in remote_groups:
+        old_name = group.get("name", "")
+        if not old_name:
+            continue
+
+        new_name = group_remap[old_name]
+        if new_name != f"node-{old_name}":
+            print(f"  远程分组重名已重命名: {old_name} → {new_name}")
+        group["name"] = new_name
+
+        # 修正 proxies 引用（节点名 + 分组名）
+        if full_remap and "proxies" in group:
+            group["proxies"] = [
+                full_remap.get(p, p) for p in group["proxies"]
+            ]
+
+        base_groups.append(group)
+        added_names.append(new_name)
+
+    if added_names:
+        print(f"  已合并远程分组: {', '.join(added_names)}")
+
+    if "proxy-groups" in base:
+        base["proxy-groups"] = base_groups
+    elif "ProxyGroup" in base:
+        base["ProxyGroup"] = base_groups
+    else:
+        base["proxy-groups"] = base_groups
+
+    return added_names
 
 
 def create_unified_groups(base: dict, all_proxy_names: list, hash_names: list = None, auto_names: list = None) -> None:
@@ -394,9 +452,10 @@ def create_hash_groups(base: dict, source_proxy_map: dict) -> list:
     return hash_names
 
 
-def build_main_group(base: dict, source_names: list, hash_names: list = None) -> None:
+def build_main_group(base: dict, source_names: list, hash_names: list = None, extra_groups: list = None) -> None:
     """
     构建"节点选择"主分组，包含 DIRECT、REJECT 和所有来源的手选/自动组。
+    extra_groups: 额外要加入主分组的组名列表（如远程配置自带的分组）。
     """
     if not source_names:
         return
@@ -411,6 +470,11 @@ def build_main_group(base: dict, source_names: list, hash_names: list = None) ->
     # 添加 hash 分组
     if hash_names:
         for name in hash_names:
+            main_proxies.append(name)
+
+    # 添加远程配置自带的分组
+    if extra_groups:
+        for name in extra_groups:
             main_proxies.append(name)
 
     # 移除已有的"节点选择"组（如果模板中存在）
@@ -452,11 +516,14 @@ def main() -> None:
     all_proxy_names = []  # 收集所有节点名称，用于创建统一分组
     source_proxy_map = {}  # 按来源类型收集节点名称，用于创建 hash 分组
     auto_names = []  # 收集自动分组名称，加入手选-azheng
+    remote_group_names = []  # 收集远程配置自带的分组名称
 
     # 2. 获取并合并所有 NODE_URL
     if NODE_URLS:
         print(f"\n[2/4] 正在获取并合并节点链接...")
         all_added = []
+        all_name_map = {}  # 收集所有重名映射
+        all_remote_groups = []  # 收集所有远程配置自带的分组
         for i, node_url in enumerate(NODE_URLS, 1):
             print(f"\n  [{i}/{len(NODE_URLS)}] 来源: {node_url}")
             try:
@@ -464,8 +531,14 @@ def main() -> None:
                 node_config = parse_yaml(node_text)
                 node_count = len(node_config.get("proxies", node_config.get("Proxy", [])))
                 print(f"    获取到 {node_count} 个节点" if node_count else "    单节点配置")
-                added = merge_proxies(base_config, node_config, source_type="node")
+                added, name_map = merge_proxies(base_config, node_config, source_type="node")
                 all_added.extend(added)
+                all_name_map.update(name_map)
+                # 收集远程配置自带的 proxy-groups
+                remote_groups = node_config.get("proxy-groups") or node_config.get("ProxyGroup") or []
+                if remote_groups:
+                    print(f"    发现 {len(remote_groups)} 个远程分组")
+                    all_remote_groups.extend(remote_groups)
             except Exception as e:
                 print(f"    获取失败: {e}，跳过")
                 continue
@@ -475,6 +548,9 @@ def main() -> None:
             all_proxy_names.extend(all_added)
             source_proxy_map["node"] = all_added
             auto_names.append("node-自动")
+            # 合并远程配置自带的分组
+            if all_remote_groups:
+                remote_group_names = merge_remote_proxy_groups(base_config, all_remote_groups, all_name_map)
 
     # 3. 解析并合并 VLESS 分享链接
     if VLESS_LINKS:
@@ -490,7 +566,7 @@ def main() -> None:
                 print(f"    ✗ 解析失败: {e}")
                 continue
         if vless_proxies:
-            added = merge_proxies(base_config, {"proxies": vless_proxies}, source_type="vless")
+            added, _ = merge_proxies(base_config, {"proxies": vless_proxies}, source_type="vless")
             if added:
                 create_source_groups(base_config, "vless", added)
                 source_names.append("vless")
@@ -519,7 +595,7 @@ def main() -> None:
                 continue
 
         if v2ray_proxies:
-            added = merge_proxies(base_config, {"proxies": v2ray_proxies}, source_type="v2")
+            added, _ = merge_proxies(base_config, {"proxies": v2ray_proxies}, source_type="v2")
             if added:
                 create_source_groups(base_config, "v2", added)
                 source_names.append("v2")
@@ -531,7 +607,7 @@ def main() -> None:
     print(f"\n[构建分组]")
     hash_names = create_hash_groups(base_config, source_proxy_map)
     create_unified_groups(base_config, all_proxy_names, hash_names, auto_names)
-    build_main_group(base_config, source_names, hash_names)
+    build_main_group(base_config, source_names, hash_names, remote_group_names)
 
     # 输出统计
     final_proxies = base_config.get("proxies", base_config.get("Proxy", []))

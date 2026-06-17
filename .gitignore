@@ -5,3 +5,6 @@ merged_config.yaml
 merge_clash.log
 node_url.yaml
 .github_token
+test.env
+merged_config2.yaml
+out*/
