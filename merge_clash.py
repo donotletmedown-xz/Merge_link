@@ -318,20 +318,22 @@ def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str
     return source_name
 
 
-def create_unified_groups(base: dict, all_proxy_names: list) -> None:
+def create_unified_groups(base: dict, all_proxy_names: list, hash_names: list = None) -> None:
     """
     创建统一的手选-azheng 和自动-azheng 分组，包含所有来源的节点。
+    手选-azheng 额外包含 hash 分组，方便手动切换使用。
     """
     if not all_proxy_names:
         return
 
     groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
 
-    # 手选-azheng（手动选择所有节点）
+    # 手选-azheng（手动选择所有节点 + hash 分组）
+    select_proxies = list(all_proxy_names) + (hash_names or [])
     groups.append({
         "name": "手选-azheng",
         "type": "select",
-        "proxies": list(all_proxy_names),
+        "proxies": select_proxies,
     })
 
     # 自动-azheng（自动选择延迟最低的节点）
@@ -344,7 +346,7 @@ def create_unified_groups(base: dict, all_proxy_names: list) -> None:
         "proxies": list(all_proxy_names),
     })
 
-    print(f"  已创建统一分组: 手选-azheng / 自动-azheng (含 {len(all_proxy_names)} 个节点)")
+    print(f"  已创建统一分组: 手选-azheng ({len(select_proxies)} 个选项) / 自动-azheng ({len(all_proxy_names)} 个节点)")
 
     if "proxy-groups" in base:
         base["proxy-groups"] = groups
@@ -521,10 +523,10 @@ def main() -> None:
                 all_proxy_names.extend(added)
                 source_proxy_map["v2"] = added
 
-    # 5. 创建统一分组、hash 分组和主分组
+    # 5. 创建 hash 分组、统一分组和主分组
     print(f"\n[构建分组]")
-    create_unified_groups(base_config, all_proxy_names)
     hash_names = create_hash_groups(base_config, source_proxy_map)
+    create_unified_groups(base_config, all_proxy_names, hash_names)
     build_main_group(base_config, source_names, hash_names)
 
     # 输出统计
