@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 合并多个 Clash 配置文件的代理节点。
-从 BASE_URL 获取基础配置（规则、代理组），
-从 NODE_URLS 获取所有节点，合并后生成新文件。
-支持 VLESS 分享链接自动转换。
+从本地模板读取基础配置（DNS、规则、规则集），
+从 NODE_URLS、VLESS_LINKS、V2RAY_SUB_URLS 获取节点，
+按来源生成手选 + 自动选择分组，合并后输出。
 兼容 Windows 和 Ubuntu。
 """
 
@@ -30,19 +30,41 @@ except ImportError:
 
 
 # 优先从环境变量读取，否则使用默认值
-BASE_URL = os.environ.get("BASE_URL", "")
+TEMPLATE_FILE = os.environ.get("TEMPLATE_FILE", "config_template.yaml")
 NODE_URLS = [url.strip() for url in os.environ.get("NODE_URLS", "").split(",") if url.strip()]
 VLESS_LINKS = [link.strip() for link in os.environ.get("VLESS_LINKS", "").split(",") if link.strip()]
 V2RAY_SUB_URLS = [url.strip() for url in os.environ.get("V2RAY_SUB_URLS", "").split(",") if url.strip()]
 OUTPUT_FILE = "merged_config.yaml"
 
-# 如果环境变量为空，提示用户设置
-if not BASE_URL:
-    print("错误: 请设置 BASE_URL 环境变量")
-    sys.exit(1)
+# 如果没有任何来源，提示用户设置
 if not NODE_URLS and not VLESS_LINKS and not V2RAY_SUB_URLS:
     print("错误: 请设置 NODE_URLS、VLESS_LINKS 或 V2RAY_SUB_URLS 环境变量（至少一个）")
     sys.exit(1)
+
+
+def load_template(path: str) -> dict:
+    """从本地文件加载模板配置。"""
+    template_path = Path(path)
+    if not template_path.exists():
+        print(f"错误: 模板文件不存在: {template_path.resolve()}")
+        sys.exit(1)
+    with open(template_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError("模板文件不是有效的字典结构")
+    return data
+
+
+def read_source(path_or_url: str) -> str:
+    """读取来源内容：本地文件路径直接读取，URL 通过 HTTP 获取。"""
+    # 判断是否为本地文件路径（不以 http:// 或 https:// 开头）
+    if not path_or_url.startswith(("http://", "https://")):
+        file_path = Path(path_or_url)
+        if not file_path.exists():
+            raise FileNotFoundError(f"本地文件不存在: {file_path.resolve()}")
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return fetch_url(path_or_url)
 
 
 def fetch_url(url: str) -> str:
@@ -165,23 +187,19 @@ def parse_vless_uri(uri: str) -> dict:
     return proxy
 
 
-def merge_proxies(base: dict, node_config: dict, add_to_largest_group: bool = True) -> list:
+def merge_proxies(base: dict, node_config: dict) -> list:
     """
-    将 node_config 中的 proxies 合并到 base 中。
-    如果 add_to_largest_group 为 True，则将新节点添加到 proxy-groups 中包含最多代理的组里。
+    将 node_config 中的 proxies 合并到 base 中（按 name 去重）。
     返回新增的节点名称列表。
     """
-    # 提取新节点
     new_proxies = node_config.get("proxies") or node_config.get("Proxy") or []
     if not new_proxies:
-        # 如果链接2本身就是单个代理节点（无 proxies 顶层键），尝试直接构造
         if "server" in node_config and "port" in node_config:
             new_proxies = [node_config]
         else:
             print("警告: 链接中未找到任何代理节点")
             return []
 
-    # 合并 proxies
     base_proxies = base.get("proxies") or base.get("Proxy") or []
     existing_names = {p.get("name") for p in base_proxies}
 
@@ -195,7 +213,6 @@ def merge_proxies(base: dict, node_config: dict, add_to_largest_group: bool = Tr
         existing_names.add(name)
         added.append(name)
 
-    # 确保写回正确的键
     if "proxies" in base:
         base["proxies"] = base_proxies
     elif "Proxy" in base:
@@ -205,28 +222,8 @@ def merge_proxies(base: dict, node_config: dict, add_to_largest_group: bool = Tr
 
     if not added:
         print("没有新节点需要添加")
-        return []
-
-    print(f"新增 {len(added)} 个节点: {', '.join(added)}")
-
-    if add_to_largest_group:
-        # 找到包含最多代理的 proxy-group
-        groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
-        if not groups:
-            print("警告: 未找到 proxy-groups，跳过组添加")
-            return added
-
-        largest_group = max(groups, key=lambda g: len(g.get("proxies", [])))
-        largest_group_name = largest_group.get("name", "未知")
-        group_proxies = largest_group.get("proxies", [])
-
-        # 添加新节点到该组（去重）
-        for name in added:
-            if name not in group_proxies:
-                group_proxies.append(name)
-
-        largest_group["proxies"] = group_proxies
-        print(f"已将节点添加到最大组: {largest_group_name} (现含 {len(group_proxies)} 个代理)")
+    else:
+        print(f"新增 {len(added)} 个节点: {', '.join(added)}")
 
     return added
 
@@ -238,61 +235,51 @@ def fetch_v2ray_sub(url: str) -> list:
     print(f"  正在获取订阅内容...")
     content = fetch_url(url)
 
-    # 尝试 base64 解码
     try:
-        # 添加必要的 padding
         padding = 4 - len(content) % 4
         if padding != 4:
             content += "=" * padding
         decoded = base64.b64decode(content).decode("utf-8")
     except Exception:
-        # 如果解码失败，尝试直接按行分割
         decoded = content
 
-    # 按行分割，过滤空行
     links = [line.strip() for line in decoded.splitlines() if line.strip()]
-
-    # 只保留 vless:// 链接
     vless_links = [link for link in links if link.startswith("vless://")]
     print(f"  解析到 {len(vless_links)} 个 VLESS 链接")
     return vless_links
 
 
-def create_vps_group(base: dict, proxy_names: list) -> None:
+def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str:
     """
-    在配置中创建一个名为 "vps" 的代理组，包含指定的代理节点。
+    为一个来源创建手选 + 自动选择两个代理组。
+    返回主分组中需要引用的组名前缀。
     """
     if not proxy_names:
-        return
+        return ""
 
     groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
 
-    # 检查是否已存在 vps 组
-    vps_group = None
-    for group in groups:
-        if group.get("name") == "vps":
-            vps_group = group
-            break
+    # 手选组
+    select_name = f"{source_name}-手选"
+    groups.append({
+        "name": select_name,
+        "type": "select",
+        "proxies": list(proxy_names),
+    })
 
-    if vps_group:
-        # 已存在，合并节点
-        existing = vps_group.get("proxies", [])
-        for name in proxy_names:
-            if name not in existing:
-                existing.append(name)
-        vps_group["proxies"] = existing
-        print(f"已更新 vps 组 (现含 {len(existing)} 个代理)")
-    else:
-        # 不存在，创建新组
-        new_group = {
-            "name": "vps",
-            "type": "select",
-            "proxies": proxy_names
-        }
-        groups.append(new_group)
-        print(f"已创建 vps 组 (含 {len(proxy_names)} 个代理)")
+    # 自动选择组（url-test）
+    auto_name = f"{source_name}-自动"
+    groups.append({
+        "name": auto_name,
+        "type": "url-test",
+        "url": "http://www.gstatic.com/generate_204",
+        "interval": 300,
+        "tolerance": 50,
+        "proxies": list(proxy_names),
+    })
 
-    # 确保写回正确的键
+    print(f"  已创建分组: {select_name} / {auto_name} (含 {len(proxy_names)} 个节点)")
+
     if "proxy-groups" in base:
         base["proxy-groups"] = groups
     elif "ProxyGroup" in base:
@@ -300,37 +287,79 @@ def create_vps_group(base: dict, proxy_names: list) -> None:
     else:
         base["proxy-groups"] = groups
 
+    return source_name
+
+
+def build_main_group(base: dict, source_names: list) -> None:
+    """
+    构建"节点选择"主分组，包含 DIRECT、REJECT 和所有来源的手选/自动组。
+    """
+    if not source_names:
+        return
+
+    groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
+
+    main_proxies = ["DIRECT", "REJECT"]
+    for name in source_names:
+        main_proxies.append(f"{name}-手选")
+        main_proxies.append(f"{name}-自动")
+
+    # 移除已有的"节点选择"组（如果模板中存在）
+    groups = [g for g in groups if g.get("name") != "节点选择"]
+
+    # 插入到最前面
+    groups.insert(0, {
+        "name": "节点选择",
+        "type": "select",
+        "proxies": main_proxies,
+    })
+
+    if "proxy-groups" in base:
+        base["proxy-groups"] = groups
+    elif "ProxyGroup" in base:
+        base["ProxyGroup"] = groups
+    else:
+        base["proxy-groups"] = groups
+
+    print(f"  已创建主分组: 节点选择 (含 {len(main_proxies)} 个选项)")
+
 
 def main() -> None:
     print("=" * 50)
     print("Clash 配置合并工具")
     print("=" * 50)
 
-    # 1. 获取基础配置
-    print(f"\n[1/4] 正在获取基础配置...")
-    print(f"  URL: {BASE_URL}")
+    # 1. 加载本地模板
+    print(f"\n[1/4] 正在加载模板配置...")
+    print(f"  文件: {Path(TEMPLATE_FILE).resolve()}")
     try:
-        base_text = fetch_url(BASE_URL)
-        base_config = parse_yaml(base_text)
-        print(f"  成功，配置名: {base_config.get('name', base_config.get('mixed-port', '未知'))}")
+        base_config = load_template(TEMPLATE_FILE)
+        print(f"  成功加载模板")
     except Exception as e:
-        print(f"  获取基础配置失败: {e}")
+        print(f"  加载模板失败: {e}")
         sys.exit(1)
+
+    source_names = []
 
     # 2. 获取并合并所有 NODE_URL
     if NODE_URLS:
         print(f"\n[2/4] 正在获取并合并节点链接...")
+        all_added = []
         for i, node_url in enumerate(NODE_URLS, 1):
-            print(f"\n  [{i}/{len(NODE_URLS)}] URL: {node_url}")
+            print(f"\n  [{i}/{len(NODE_URLS)}] 来源: {node_url}")
             try:
-                node_text = fetch_url(node_url)
+                node_text = read_source(node_url)
                 node_config = parse_yaml(node_text)
                 node_count = len(node_config.get("proxies", node_config.get("Proxy", [])))
                 print(f"    获取到 {node_count} 个节点" if node_count else "    单节点配置")
-                merge_proxies(base_config, node_config)
+                added = merge_proxies(base_config, node_config)
+                all_added.extend(added)
             except Exception as e:
                 print(f"    获取失败: {e}，跳过")
                 continue
+        if all_added:
+            create_source_groups(base_config, "机场节点", all_added)
+            source_names.append("机场节点")
 
     # 3. 解析并合并 VLESS 分享链接
     if VLESS_LINKS:
@@ -346,7 +375,10 @@ def main() -> None:
                 print(f"    ✗ 解析失败: {e}")
                 continue
         if vless_proxies:
-            merge_proxies(base_config, {"proxies": vless_proxies})
+            added = merge_proxies(base_config, {"proxies": vless_proxies})
+            if added:
+                create_source_groups(base_config, "直连节点", added)
+                source_names.append("直连节点")
 
     # 4. 获取并合并 v2ray 订阅链接
     if V2RAY_SUB_URLS:
@@ -369,11 +401,14 @@ def main() -> None:
                 continue
 
         if v2ray_proxies:
-            # 先添加到最大组（不创建 vps 组）
-            added_names = merge_proxies(base_config, {"proxies": v2ray_proxies}, add_to_largest_group=True)
-            # 创建 vps 组
-            if added_names:
-                create_vps_group(base_config, added_names)
+            added = merge_proxies(base_config, {"proxies": v2ray_proxies})
+            if added:
+                create_source_groups(base_config, "订阅节点", added)
+                source_names.append("订阅节点")
+
+    # 5. 构建主分组
+    print(f"\n[构建主分组]")
+    build_main_group(base_config, source_names)
 
     # 输出统计
     final_proxies = base_config.get("proxies", base_config.get("Proxy", []))
@@ -381,6 +416,11 @@ def main() -> None:
     print(f"\n最终统计:")
     print(f"  代理节点总数: {len(final_proxies)}")
     print(f"  代理组总数:   {len(final_groups)}")
+    for g in final_groups:
+        name = g.get("name", "?")
+        gtype = g.get("type", "?")
+        count = len(g.get("proxies", []))
+        print(f"    - {name} ({gtype}): {count} 个")
 
     # 写入文件
     output_path = Path(OUTPUT_FILE)

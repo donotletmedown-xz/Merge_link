@@ -24,7 +24,6 @@ jobs:
 
       - name: Run merge script
         env:
-          BASE_URL: ${{ secrets.BASE_URL }}
           NODE_URLS: ${{ secrets.NODE_URLS }}
           VLESS_LINKS: ${{ secrets.VLESS_LINKS }}
           V2RAY_SUB_URLS: ${{ secrets.V2RAY_SUB_URLS }}
