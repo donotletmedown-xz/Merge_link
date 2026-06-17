@@ -302,7 +302,7 @@ def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str
         "type": "url-test",
         "url": "http://www.gstatic.com/generate_204",
         "interval": 300,
-        "tolerance": 50,
+        "tolerance": 30,
         "proxies": list(proxy_names),
     })
 
@@ -318,18 +318,18 @@ def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str
     return source_name
 
 
-def create_unified_groups(base: dict, all_proxy_names: list, hash_names: list = None) -> None:
+def create_unified_groups(base: dict, all_proxy_names: list, hash_names: list = None, auto_names: list = None) -> None:
     """
     创建统一的手选-azheng 和自动-azheng 分组，包含所有来源的节点。
-    手选-azheng 额外包含 hash 分组，方便手动切换使用。
+    手选-azheng 额外包含 hash 分组和自动分组，方便手动切换使用。
     """
     if not all_proxy_names:
         return
 
     groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
 
-    # 手选-azheng（手动选择所有节点 + hash 分组）
-    select_proxies = list(all_proxy_names) + (hash_names or [])
+    # 手选-azheng（手动选择所有节点 + hash 分组 + 自动分组）
+    select_proxies = list(all_proxy_names) + (hash_names or []) + (auto_names or [])
     groups.append({
         "name": "手选-azheng",
         "type": "select",
@@ -342,7 +342,7 @@ def create_unified_groups(base: dict, all_proxy_names: list, hash_names: list = 
         "type": "url-test",
         "url": "http://www.gstatic.com/generate_204",
         "interval": 300,
-        "tolerance": 50,
+        "tolerance": 30,
         "proxies": list(all_proxy_names),
     })
 
@@ -451,6 +451,7 @@ def main() -> None:
     source_names = []
     all_proxy_names = []  # 收集所有节点名称，用于创建统一分组
     source_proxy_map = {}  # 按来源类型收集节点名称，用于创建 hash 分组
+    auto_names = []  # 收集自动分组名称，加入手选-azheng
 
     # 2. 获取并合并所有 NODE_URL
     if NODE_URLS:
@@ -473,6 +474,7 @@ def main() -> None:
             source_names.append("node")
             all_proxy_names.extend(all_added)
             source_proxy_map["node"] = all_added
+            auto_names.append("node-自动")
 
     # 3. 解析并合并 VLESS 分享链接
     if VLESS_LINKS:
@@ -494,6 +496,7 @@ def main() -> None:
                 source_names.append("vless")
                 all_proxy_names.extend(added)
                 source_proxy_map["vless"] = added
+                auto_names.append("vless-自动")
 
     # 4. 获取并合并 v2ray 订阅链接
     if V2RAY_SUB_URLS:
@@ -522,11 +525,12 @@ def main() -> None:
                 source_names.append("v2")
                 all_proxy_names.extend(added)
                 source_proxy_map["v2"] = added
+                auto_names.append("v2-自动")
 
     # 5. 创建 hash 分组、统一分组和主分组
     print(f"\n[构建分组]")
     hash_names = create_hash_groups(base_config, source_proxy_map)
-    create_unified_groups(base_config, all_proxy_names, hash_names)
+    create_unified_groups(base_config, all_proxy_names, hash_names, auto_names)
     build_main_group(base_config, source_names, hash_names)
 
     # 输出统计
