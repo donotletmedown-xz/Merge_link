@@ -187,7 +187,32 @@ def parse_vless_uri(uri: str) -> dict:
     return proxy
 
 
-def merge_proxies(base: dict, node_config: dict) -> list:
+def deduplicate_name(name: str, source_type: str, existing_names: set) -> str:
+    """
+    为重名节点添加来源后缀（固定后缀，重复时加编号）。
+    NODE_URLS → -node, -node-2, -node-3, ...
+    VLESS_LINKS → -vless, -vless-2, -vless-3, ...
+    V2RAY_SUB_URLS → -v2, -v2-2, -v2-3, ...
+    """
+    suffix_map = {
+        "node": "-node",
+        "vless": "-vless",
+        "v2": "-v2",
+    }
+    suffix = suffix_map.get(source_type, "-node")
+    # 第一个不加编号，第二个开始加 -2, -3, ...
+    new_name = f"{name}{suffix}"
+    if new_name not in existing_names:
+        return new_name
+    counter = 2
+    while True:
+        new_name = f"{name}{suffix}-{counter}"
+        if new_name not in existing_names:
+            return new_name
+        counter += 1
+
+
+def merge_proxies(base: dict, node_config: dict, source_type: str = "node") -> list:
     """
     将 node_config 中的 proxies 合并到 base 中（按 name 去重）。
     返回新增的节点名称列表。
@@ -207,8 +232,11 @@ def merge_proxies(base: dict, node_config: dict) -> list:
     for proxy in new_proxies:
         name = proxy.get("name", "")
         if name in existing_names:
-            print(f"  跳过重复节点: {name}")
-            continue
+            # 根据来源类型添加后缀，而不是跳过
+            new_name = deduplicate_name(name, source_type, existing_names)
+            proxy["name"] = new_name
+            print(f"  重名节点已重命名: {name} → {new_name}")
+            name = new_name
         base_proxies.append(proxy)
         existing_names.add(name)
         added.append(name)
@@ -290,7 +318,81 @@ def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str
     return source_name
 
 
-def build_main_group(base: dict, source_names: list) -> None:
+def create_unified_groups(base: dict, all_proxy_names: list) -> None:
+    """
+    创建统一的手选-azheng 和自动-azheng 分组，包含所有来源的节点。
+    """
+    if not all_proxy_names:
+        return
+
+    groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
+
+    # 手选-azheng（手动选择所有节点）
+    groups.append({
+        "name": "手选-azheng",
+        "type": "select",
+        "proxies": list(all_proxy_names),
+    })
+
+    # 自动-azheng（自动选择延迟最低的节点）
+    groups.append({
+        "name": "自动-azheng",
+        "type": "url-test",
+        "url": "http://www.gstatic.com/generate_204",
+        "interval": 300,
+        "tolerance": 50,
+        "proxies": list(all_proxy_names),
+    })
+
+    print(f"  已创建统一分组: 手选-azheng / 自动-azheng (含 {len(all_proxy_names)} 个节点)")
+
+    if "proxy-groups" in base:
+        base["proxy-groups"] = groups
+    elif "ProxyGroup" in base:
+        base["ProxyGroup"] = groups
+    else:
+        base["proxy-groups"] = groups
+
+
+def create_hash_groups(base: dict, source_proxy_map: dict) -> list:
+    """
+    为每个来源类型创建 load-balance（一致性哈希）分组。
+    source_proxy_map: {"node": [...], "vless": [...], "v2": [...]}
+    返回创建的 hash 分组名称列表。
+    """
+    if not source_proxy_map:
+        return []
+
+    groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
+    hash_names = []
+
+    for source_type, proxy_names in source_proxy_map.items():
+        if not proxy_names:
+            continue
+
+        hash_name = f"hash-{source_type}"
+        groups.append({
+            "name": hash_name,
+            "type": "load-balance",
+            "url": "http://www.gstatic.com/generate_204",
+            "interval": 180,
+            "strategy": "consistent-hashing",
+            "proxies": list(proxy_names),
+        })
+        hash_names.append(hash_name)
+        print(f"  已创建 hash 分组: {hash_name} (含 {len(proxy_names)} 个节点)")
+
+    if "proxy-groups" in base:
+        base["proxy-groups"] = groups
+    elif "ProxyGroup" in base:
+        base["ProxyGroup"] = groups
+    else:
+        base["proxy-groups"] = groups
+
+    return hash_names
+
+
+def build_main_group(base: dict, source_names: list, hash_names: list = None) -> None:
     """
     构建"节点选择"主分组，包含 DIRECT、REJECT 和所有来源的手选/自动组。
     """
@@ -299,10 +401,15 @@ def build_main_group(base: dict, source_names: list) -> None:
 
     groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
 
-    main_proxies = ["DIRECT", "REJECT"]
+    main_proxies = ["DIRECT", "REJECT", "手选-azheng", "自动-azheng"]
     for name in source_names:
         main_proxies.append(f"{name}-手选")
         main_proxies.append(f"{name}-自动")
+
+    # 添加 hash 分组
+    if hash_names:
+        for name in hash_names:
+            main_proxies.append(name)
 
     # 移除已有的"节点选择"组（如果模板中存在）
     groups = [g for g in groups if g.get("name") != "节点选择"]
@@ -340,6 +447,8 @@ def main() -> None:
         sys.exit(1)
 
     source_names = []
+    all_proxy_names = []  # 收集所有节点名称，用于创建统一分组
+    source_proxy_map = {}  # 按来源类型收集节点名称，用于创建 hash 分组
 
     # 2. 获取并合并所有 NODE_URL
     if NODE_URLS:
@@ -352,14 +461,16 @@ def main() -> None:
                 node_config = parse_yaml(node_text)
                 node_count = len(node_config.get("proxies", node_config.get("Proxy", [])))
                 print(f"    获取到 {node_count} 个节点" if node_count else "    单节点配置")
-                added = merge_proxies(base_config, node_config)
+                added = merge_proxies(base_config, node_config, source_type="node")
                 all_added.extend(added)
             except Exception as e:
                 print(f"    获取失败: {e}，跳过")
                 continue
         if all_added:
-            create_source_groups(base_config, "机场节点", all_added)
-            source_names.append("机场节点")
+            create_source_groups(base_config, "node", all_added)
+            source_names.append("node")
+            all_proxy_names.extend(all_added)
+            source_proxy_map["node"] = all_added
 
     # 3. 解析并合并 VLESS 分享链接
     if VLESS_LINKS:
@@ -375,10 +486,12 @@ def main() -> None:
                 print(f"    ✗ 解析失败: {e}")
                 continue
         if vless_proxies:
-            added = merge_proxies(base_config, {"proxies": vless_proxies})
+            added = merge_proxies(base_config, {"proxies": vless_proxies}, source_type="vless")
             if added:
-                create_source_groups(base_config, "直连节点", added)
-                source_names.append("直连节点")
+                create_source_groups(base_config, "vless", added)
+                source_names.append("vless")
+                all_proxy_names.extend(added)
+                source_proxy_map["vless"] = added
 
     # 4. 获取并合并 v2ray 订阅链接
     if V2RAY_SUB_URLS:
@@ -401,14 +514,18 @@ def main() -> None:
                 continue
 
         if v2ray_proxies:
-            added = merge_proxies(base_config, {"proxies": v2ray_proxies})
+            added = merge_proxies(base_config, {"proxies": v2ray_proxies}, source_type="v2")
             if added:
-                create_source_groups(base_config, "订阅节点", added)
-                source_names.append("订阅节点")
+                create_source_groups(base_config, "v2", added)
+                source_names.append("v2")
+                all_proxy_names.extend(added)
+                source_proxy_map["v2"] = added
 
-    # 5. 构建主分组
-    print(f"\n[构建主分组]")
-    build_main_group(base_config, source_names)
+    # 5. 创建统一分组、hash 分组和主分组
+    print(f"\n[构建分组]")
+    create_unified_groups(base_config, all_proxy_names)
+    hash_names = create_hash_groups(base_config, source_proxy_map)
+    build_main_group(base_config, source_names, hash_names)
 
     # 输出统计
     final_proxies = base_config.get("proxies", base_config.get("Proxy", []))

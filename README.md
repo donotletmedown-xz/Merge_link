@@ -1,17 +1,21 @@
 # Merge_link
 
-Clash / Mihomo 代理配置合并工具。从远程 URL 获取基础配置（规则、代理组、DNS），再从多个节点 URL、VLESS 分享链接和 v2ray 订阅链接中提取代理节点，合并输出为单一 YAML 配置文件，并可自动上传至 GitHub Gist 作为订阅链接使用。
+Clash / Mihomo 代理配置合并工具。从本地模板读取基础配置（规则、DNS、规则集），再从多个节点 URL、VLESS 分享链接和 v2ray 订阅链接中提取代理节点，按来源生成分组，合并输出为单一 YAML 配置文件，并可自动上传至 GitHub Gist 作为订阅链接使用。
 
 ## 功能特性
 
-- 从远程 URL 获取基础 Clash 配置作为骨架
+- 从本地模板文件读取基础配置（DNS、规则集、规则），无需远程获取
 - 支持从多个节点 URL 合并代理节点
 - 支持 VLESS 分享链接直接解析为 Clash Meta 代理节点
-- 支持 v2ray 订阅链接（base64 编码的 VLESS 链接列表），自动创建 "vps" 代理组
-- 自动按 name 去重，新节点自动添加到最大的 proxy-group
+- 支持 v2ray 订阅链接（base64 编码的 VLESS 链接列表）
+- 按来源自动分组：`node-*`、`vless-*`、`v2-*`
+- 统一分组：`手选-azheng`（手动选择）、`自动-azheng`（自动选择延迟最低）
+- 负载均衡分组：`hash-node`、`hash-vless`、`hash-v2`（一致性哈希策略）
+- 重名节点自动添加来源后缀（`-node`、`-vless`、`-v2`）
 - 兼容 Clash 和 Mihomo 的键名格式（`proxies`/`Proxy`、`proxy-groups`/`ProxyGroup`）
 - VLESS 支持传输层：tcp / ws / grpc / h2 / quic
 - VLESS 支持安全层：none / tls / reality
+- 规则集自动更新（Loyalsoldier/clash-rules，每 24 小时更新）
 - GitHub Actions 每 2 小时自动运行，结果上传至 Gist
 - 也可在 VPS 上直接运行或远程触发 Actions
 
@@ -61,17 +65,16 @@ Actions 运行后需要将合并结果上传到 GitHub Gist，这需要一个具
 
 | Name | Value | 说明 |
 |------|-------|------|
-| `BASE_URL` | `https://example.com/base.yaml` | 基础 Clash 配置 URL（提供规则、代理组、DNS） |
 | `NODE_URLS` | `https://a.com/nodes.yaml,https://b.com/nodes.yaml` | 逗号分隔的节点配置 URL 列表 |
 | `VLESS_LINKS` | `vless://uuid@server:port?params#name` | 逗号分隔的 VLESS 分享链接 |
 | `V2RAY_SUB_URLS` | `https://sub.example.com/sub` | 逗号分隔的 v2ray 订阅链接（返回 base64 编码的 VLESS 链接列表） |
 | `GIST_TOKEN` | `github_pat_xxx...` | 第 2 步获取的 GitHub Token |
 | `GIST_ID` | 留空 | 首次运行会自动创建 Gist 并输出 ID |
 
-添加步骤（以 `BASE_URL` 为例）：
+添加步骤（以 `NODE_URLS` 为例）：
 1. 点击 **New repository secret**
-2. **Name** 输入 `BASE_URL`
-3. **Secret** 输入你的基础配置 URL
+2. **Name** 输入 `NODE_URLS`
+3. **Secret** 输入你的节点配置 URL（多个用逗号分隔）
 4. 点击 **Add secret**
 5. 重复以上步骤添加其他 Secret
 
@@ -117,7 +120,6 @@ cd Merge_link
 ### 第 2 步：设置环境变量
 
 ```bash
-export BASE_URL="https://example.com/base.yaml"
 export NODE_URLS="https://a.com/nodes.yaml,https://b.com/nodes.yaml"
 export VLESS_LINKS="vless://uuid@server:port?params#name"
 export V2RAY_SUB_URLS="https://sub.example.com/sub"
@@ -209,16 +211,17 @@ bash trigger_actions.sh --uninstall
 
 | 变量 | 必需 | 说明 |
 |------|------|------|
-| `BASE_URL` | 是 | 基础 Clash 配置 URL，提供规则、代理组、DNS 等骨架 |
+| `TEMPLATE_FILE` | 否 | 基础配置模板文件路径（默认 `config_template.yaml`） |
 | `NODE_URLS` | 三选一 | 逗号分隔的节点配置 URL，每个 URL 指向一个包含 `proxies` 的 YAML |
 | `VLESS_LINKS` | 三选一 | 逗号分隔的 VLESS 分享链接（`vless://uuid@server:port?params#name`） |
-| `V2RAY_SUB_URLS` | 三选一 | 逗号分隔的 v2ray 订阅链接，返回 base64 编码的 VLESS 链接列表，自动创建 "vps" 代理组 |
+| `V2RAY_SUB_URLS` | 三选一 | 逗号分隔的 v2ray 订阅链接，返回 base64 编码的 VLESS 链接列表 |
 
 ## 项目结构
 
 ```
 Merge_link/
 ├── merge_clash.py              # 核心合并脚本
+├── config_template.yaml        # 基础配置模板（DNS、规则集、规则）
 ├── setup_cron.sh               # VPS 直接部署脚本
 ├── setup_vnstat.sh             # vnstat 流量统计一键部署脚本
 ├── trigger_actions.sh          # VPS 远程触发 Actions 脚本
@@ -233,24 +236,40 @@ Merge_link/
 ## 工作原理
 
 ```
-BASE_URL ──→ 基础配置（规则、代理组、DNS）
+config_template.yaml ──→ 基础配置（DNS、规则集、规则）
                 │
 NODE_URLS ──→ 节点配置 ──┐
                          │
-VLESS_LINKS → VLESS 解析 ─┼──→ 合并去重 ──→ merged_config.yaml ──→ Gist（订阅链接）
+VLESS_LINKS → VLESS 解析 ─┼──→ 合并去重 ──→ 创建分组 ──→ merged_config.yaml ──→ Gist
                          │
 V2RAY_SUB_URLS ──────────┘
     ↓
     base64 解码 → VLESS 链接列表 → 解析合并
-    同时创建 "vps" 代理组
 ```
 
-1. 从 `BASE_URL` 获取基础配置作为骨架
-2. 遍历 `NODE_URLS`，逐个获取并提取 `proxies` 节点
-3. 遍历 `VLESS_LINKS`，解析为 Clash Meta 代理字典
-4. 遍历 `V2RAY_SUB_URLS`，获取订阅内容并 base64 解码，解析 VLESS 链接，创建 "vps" 代理组
-5. 按 `name` 去重，新节点添加到最大的 `proxy-group`
-6. 输出 `merged_config.yaml`，上传至 Gist
+1. 从本地 `config_template.yaml` 加载基础配置（DNS、规则集、规则）
+2. 遍历 `NODE_URLS`，逐个获取并提取 `proxies` 节点 → 创建 `node-手选` / `node-自动` 分组
+3. 遍历 `VLESS_LINKS`，解析为 Clash Meta 代理字典 → 创建 `vless-手选` / `vless-自动` 分组
+4. 遍历 `V2RAY_SUB_URLS`，获取订阅内容并 base64 解码，解析 VLESS 链接 → 创建 `v2-手选` / `v2-自动` 分组
+5. 重名节点自动添加来源后缀（`-node`、`-vless`、`-v2`）
+6. 创建统一分组：`手选-azheng`（所有节点）、`自动-azheng`（自动选择延迟最低）
+7. 创建负载均衡分组：`hash-node`、`hash-vless`、`hash-v2`（一致性哈希策略）
+8. 构建主分组 `节点选择`，引用所有分组
+9. 输出 `merged_config.yaml`，上传至 Gist
+
+## 分组结构
+
+```
+节点选择 (主分组)
+├── 手选-azheng          # 所有节点，手动选择
+├── 自动-azheng          # 所有节点，自动选择延迟最低
+├── hash-node            # NODE_URLS 节点，一致性哈希负载均衡
+├── hash-vless           # VLESS_LINKS 节点，一致性哈希负载均衡
+├── hash-v2              # V2RAY_SUB_URLS 节点，一致性哈希负载均衡
+├── node-手选 / node-自动    # NODE_URLS 来源分组
+├── vless-手选 / vless-自动  # VLESS_LINKS 来源分组
+└── v2-手选 / v2-自动        # V2RAY_SUB_URLS 来源分组
+```
 
 ## 附：vnstat 流量统计
 
@@ -296,12 +315,12 @@ sudo ./setup_vnstat.sh
 
 **Q: v2ray 订阅链接是什么？**
 
-v2ray 订阅链接返回 base64 编码的 VLESS 链接列表。设置 `V2RAY_SUB_URLS` 后，脚本会自动获取、解码、解析，并创建一个名为 "vps" 的代理组存放这些节点。
+v2ray 订阅链接返回 base64 编码的 VLESS 链接列表。设置 `V2RAY_SUB_URLS` 后，脚本会自动获取、解码、解析，并创建 `v2-*` 分组存放这些节点。
 
 **Q: Actions 运行失败怎么办？**
 
 进入 Actions 页面查看日志，常见原因：
-- `BASE_URL` 无法访问
+- 节点 URL 无法访问
 - Token 权限不足（需要 `gist` 权限）
 - `GIST_ID` 填写错误
 

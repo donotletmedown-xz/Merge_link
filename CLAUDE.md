@@ -38,19 +38,24 @@ python merge_clash.py
 
 核心流程 `main()`：
 1. `load_template(TEMPLATE_FILE)` 加载本地模板配置
-2. 遍历 `NODE_URLS`，逐个获取并调用 `merge_proxies()` 合并节点 → 创建 "机场节点-手选" / "机场节点-自动" 分组
-3. 遍历 `VLESS_LINKS`，`parse_vless_uri()` 解析后合并 → 创建 "直连节点-手选" / "直连节点-自动" 分组
-4. 遍历 `V2RAY_SUB_URLS`，`fetch_v2ray_sub()` 解码后合并 → 创建 "订阅节点-手选" / "订阅节点-自动" 分组
-5. `build_main_group()` 构建 "节点选择" 主分组，引用所有来源的手选/自动组
-6. 写入 `merged_config.yaml`
+2. 遍历 `NODE_URLS`，逐个获取并调用 `merge_proxies()` 合并节点 → 创建 "node-手选" / "node-自动" 分组
+3. 遍历 `VLESS_LINKS`，`parse_vless_uri()` 解析后合并 → 创建 "vless-手选" / "vless-自动" 分组
+4. 遍历 `V2RAY_SUB_URLS`，`fetch_v2ray_sub()` 解码后合并 → 创建 "v2-手选" / "v2-自动" 分组
+5. `create_unified_groups()` 创建 "手选-azheng" / "自动-azheng" 统一分组（包含所有节点）
+6. `create_hash_groups()` 创建 "hash-node" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
+7. `build_main_group()` 构建 "节点选择" 主分组，引用统一分组、hash 分组和各来源分组
+8. 写入 `merged_config.yaml`
 
 关键函数：
 - `load_template(path)` — 从本地文件加载模板配置
 - `parse_vless_uri(uri)` — VLESS 链接解析，支持传输层 tcp/ws/grpc/h2/quic，安全层 none/tls/reality
-- `merge_proxies(base, node_config)` — 按 name 去重合并 proxies，返回新增节点名称列表
+- `merge_proxies(base, node_config, source_type)` — 按 name 合并 proxies，重名时根据来源类型添加后缀（-node/-vless/-v2）
+- `deduplicate_name(name, source_type, existing_names)` — 为重名节点生成唯一名称
 - `fetch_v2ray_sub(url)` — 获取 v2ray 订阅内容，base64 解码后返回 VLESS 链接列表
 - `create_source_groups(base, source_name, proxy_names)` — 为来源创建手选 + 自动选择两个分组
-- `build_main_group(base, source_names)` — 构建 "节点选择" 主分组
+- `create_unified_groups(base, all_proxy_names)` — 创建 "手选-azheng" / "自动-azheng" 统一分组
+- `create_hash_groups(base, source_proxy_map)` — 创建 "hash-node" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
+- `build_main_group(base, source_names, hash_names)` — 构建 "节点选择" 主分组
 
 ## 兼容性细节
 
