@@ -34,7 +34,7 @@ TEMPLATE_FILE = os.environ.get("TEMPLATE_FILE", "config_template.yaml")
 NODE_URLS = [url.strip() for url in os.environ.get("NODE_URLS", "").split(",") if url.strip()]
 VLESS_LINKS = [link.strip() for link in os.environ.get("VLESS_LINKS", "").split(",") if link.strip()]
 V2RAY_SUB_URLS = [url.strip() for url in os.environ.get("V2RAY_SUB_URLS", "").split(",") if url.strip()]
-OUTPUT_FILE = "merged_config.yaml"
+OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "merged_config.yaml")
 
 # 如果没有任何来源，提示用户设置
 if not NODE_URLS and not VLESS_LINKS and not V2RAY_SUB_URLS:
