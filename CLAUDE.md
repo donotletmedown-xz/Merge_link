@@ -31,18 +31,29 @@ python merge_clash.py
 
 至少需要设置 `NODE_URLS`、`VLESS_LINKS` 或 `V2RAY_SUB_URLS` 之一。输出文件为 `merged_config.yaml`。
 
+## 本地测试
+
+`run_test.py` 读取 `test.env` 中的环境变量，调用 `merge_clash.py` 执行合并。修改代码后用它快速验证：
+
+```bash
+python run_test.py
+```
+
+`test.env` 格式与 `.env` 相同，支持 `#` 注释，包含 `NODE_URLS`、`VLESS_LINKS`、`V2RAY_SUB_URLS`、`OUTPUT_FILE` 等变量。已 gitignore，不提交。
+
 ## 架构
 
 - `config_template.yaml` — 基础配置模板，包含 DNS、规则集、规则，不含代理节点和分组
 - `merge_clash.py` — 合并脚本（约 400 行），仅依赖 stdlib + pyyaml
+- `run_test.py` — 本地测试脚本，加载 `test.env` 并运行 `merge_clash.py`
 
 核心流程 `main()`：
 1. `load_template(TEMPLATE_FILE)` 加载本地模板配置
-2. 遍历 `NODE_URLS`，逐个获取并调用 `merge_proxies()` 合并节点 → 创建 "node-手选" / "node-自动" 分组
+2. 遍历 `NODE_URLS`，逐个获取并调用 `merge_proxies()` 合并节点 → 每个 URL 独立创建 "node-N-手选" / "node-N-自动" 分组
 3. 遍历 `VLESS_LINKS`，`parse_vless_uri()` 解析后合并 → 创建 "vless-手选" / "vless-自动" 分组
 4. 遍历 `V2RAY_SUB_URLS`，`fetch_v2ray_sub()` 解码后合并 → 创建 "v2-手选" / "v2-自动" 分组
 5. `create_unified_groups()` 创建 "手选-azheng" / "自动-azheng" 统一分组（包含所有节点）
-6. `create_hash_groups()` 创建 "hash-node" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
+6. `create_hash_groups()` 创建 "hash-node-N" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
 7. `build_main_group()` 构建 "节点选择" 主分组，引用统一分组、hash 分组和各来源分组
 8. 写入 `merged_config.yaml`
 
@@ -54,7 +65,7 @@ python merge_clash.py
 - `fetch_v2ray_sub(url)` — 获取 v2ray 订阅内容，base64 解码后返回 VLESS 链接列表
 - `create_source_groups(base, source_name, proxy_names)` — 为来源创建手选 + 自动选择两个分组
 - `create_unified_groups(base, all_proxy_names)` — 创建 "手选-azheng" / "自动-azheng" 统一分组
-- `create_hash_groups(base, source_proxy_map)` — 创建 "hash-node" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
+- `create_hash_groups(base, source_proxy_map)` — 创建 "hash-node-N" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
 - `build_main_group(base, source_names, hash_names)` — 构建 "节点选择" 主分组
 
 ## 兼容性细节
@@ -76,4 +87,4 @@ python merge_clash.py
 
 ## Git 注意事项
 
-`merged_config.yaml`、`node_url.yaml`、`merge_clash.log` 均已 gitignore。这些文件包含代理 UUID、服务器 IP 等敏感信息，不应提交。
+`merged_config.yaml`、`node_url.yaml`、`merge_clash.log`、`test.env` 均已 gitignore。这些文件包含代理 UUID、服务器 IP 等敏感信息，不应提交。

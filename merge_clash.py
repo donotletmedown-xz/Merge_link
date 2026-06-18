@@ -440,11 +440,11 @@ def main() -> None:
     source_proxy_map = {}  # 按来源类型收集节点名称，用于创建 hash 分组
     auto_names = []  # 收集自动分组名称，加入手选-azheng
 
-    # 2. 获取并合并所有 NODE_URL
+    # 2. 获取并合并所有 NODE_URL（每个 URL 独立分组）
     if NODE_URLS:
         print(f"\n[2/4] 正在获取并合并节点链接...")
-        all_added = []
         for i, node_url in enumerate(NODE_URLS, 1):
+            source_name = f"node-{i}"
             print(f"\n  [{i}/{len(NODE_URLS)}] 来源: {node_url}")
             try:
                 node_text = read_source(node_url)
@@ -452,16 +452,15 @@ def main() -> None:
                 node_count = len(node_config.get("proxies", node_config.get("Proxy", [])))
                 print(f"    获取到 {node_count} 个节点" if node_count else "    单节点配置")
                 added = merge_proxies(base_config, node_config, source_type="node")
-                all_added.extend(added)
+                if added:
+                    create_source_groups(base_config, source_name, added)
+                    source_names.append(source_name)
+                    all_proxy_names.extend(added)
+                    source_proxy_map[source_name] = added
+                    auto_names.append(f"{source_name}-自动")
             except Exception as e:
                 print(f"    获取失败: {e}，跳过")
                 continue
-        if all_added:
-            create_source_groups(base_config, "node", all_added)
-            source_names.append("node")
-            all_proxy_names.extend(all_added)
-            source_proxy_map["node"] = all_added
-            auto_names.append("node-自动")
 
     # 3. 解析并合并 VLESS 分享链接
     if VLESS_LINKS:
