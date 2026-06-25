@@ -53,8 +53,7 @@ python run_test.py
 3. 遍历 `VLESS_LINKS`，`parse_vless_uri()` 解析后合并 → 创建 "vless-手选" / "vless-自动" 分组
 4. 遍历 `V2RAY_SUB_URLS`，`fetch_v2ray_sub()` 解码后合并 → 创建 "v2-手选" / "v2-自动" 分组
 5. `create_unified_groups()` 创建 "手选-azheng" / "自动-azheng" 统一分组（包含所有节点）
-6. `create_hash_groups()` 创建 "hash-node-N" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
-7. `build_main_group()` 构建 "节点选择" 主分组，引用统一分组、hash 分组和各来源分组
+6. `build_main_group()` 构建 "节点选择" 主分组，引用统一分组和各来源分组
 8. 写入 `merged_config.yaml`
 
 关键函数：
@@ -64,9 +63,8 @@ python run_test.py
 - `deduplicate_name(name, source_type, existing_names)` — 为重名节点生成唯一名称
 - `fetch_v2ray_sub(url)` — 获取 v2ray 订阅内容，base64 解码后返回 VLESS 链接列表
 - `create_source_groups(base, source_name, proxy_names)` — 为来源创建手选 + 自动选择两个分组
-- `create_unified_groups(base, all_proxy_names)` — 创建 "手选-azheng" / "自动-azheng" 统一分组
-- `create_hash_groups(base, source_proxy_map)` — 创建 "hash-node-N" / "hash-vless" / "hash-v2" 负载均衡分组（一致性哈希）
-- `build_main_group(base, source_names, hash_names)` — 构建 "节点选择" 主分组
+- `create_unified_groups(base, all_proxy_names, auto_names)` — 创建 "手选-azheng" / "自动-azheng" 统一分组
+- `build_main_group(base, source_names)` — 构建 "节点选择" 主分组
 
 ## 兼容性细节
 

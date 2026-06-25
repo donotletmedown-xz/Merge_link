@@ -305,18 +305,18 @@ def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str
     return source_name
 
 
-def create_unified_groups(base: dict, all_proxy_names: list, hash_names: list = None, auto_names: list = None) -> None:
+def create_unified_groups(base: dict, all_proxy_names: list, auto_names: list = None) -> None:
     """
     创建统一的手选-azheng 和自动-azheng 分组，包含所有来源的节点。
-    手选-azheng 额外包含 hash 分组和自动分组，方便手动切换使用。
+    手选-azheng 额外包含自动分组，方便手动切换使用。
     """
     if not all_proxy_names:
         return
 
     groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
 
-    # 手选-azheng（手动选择所有节点 + hash 分组 + 自动分组）
-    select_proxies = list(all_proxy_names) + (hash_names or []) + (auto_names or [])
+    # 手选-azheng（手动选择所有节点 + 自动分组）
+    select_proxies = list(all_proxy_names) + (auto_names or [])
     groups.append({
         "name": "手选-azheng",
         "type": "select",
@@ -343,45 +343,8 @@ def create_unified_groups(base: dict, all_proxy_names: list, hash_names: list = 
         base["proxy-groups"] = groups
 
 
-def create_hash_groups(base: dict, source_proxy_map: dict) -> list:
-    """
-    为每个来源类型创建 load-balance（一致性哈希）分组。
-    source_proxy_map: {"node": [...], "vless": [...], "v2": [...]}
-    返回创建的 hash 分组名称列表。
-    """
-    if not source_proxy_map:
-        return []
 
-    groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
-    hash_names = []
-
-    for source_type, proxy_names in source_proxy_map.items():
-        if not proxy_names:
-            continue
-
-        hash_name = f"hash-{source_type}"
-        groups.append({
-            "name": hash_name,
-            "type": "load-balance",
-            "url": "http://www.gstatic.com/generate_204",
-            "interval": 180,
-            "strategy": "consistent-hashing",
-            "proxies": list(proxy_names),
-        })
-        hash_names.append(hash_name)
-        print(f"  已创建 hash 分组: {hash_name} (含 {len(proxy_names)} 个节点)")
-
-    if "proxy-groups" in base:
-        base["proxy-groups"] = groups
-    elif "ProxyGroup" in base:
-        base["ProxyGroup"] = groups
-    else:
-        base["proxy-groups"] = groups
-
-    return hash_names
-
-
-def build_main_group(base: dict, source_names: list, hash_names: list = None) -> None:
+def build_main_group(base: dict, source_names: list) -> None:
     """
     构建"节点选择"主分组，包含 DIRECT、REJECT 和所有来源的手选/自动组。
     """
@@ -394,11 +357,6 @@ def build_main_group(base: dict, source_names: list, hash_names: list = None) ->
     for name in source_names:
         main_proxies.append(f"{name}-手选")
         main_proxies.append(f"{name}-自动")
-
-    # 添加 hash 分组
-    if hash_names:
-        for name in hash_names:
-            main_proxies.append(name)
 
     # 移除已有的"节点选择"组（如果模板中存在）
     groups = [g for g in groups if g.get("name") != "节点选择"]
@@ -437,7 +395,6 @@ def main() -> None:
 
     source_names = []
     all_proxy_names = []  # 收集所有节点名称，用于创建统一分组
-    source_proxy_map = {}  # 按来源类型收集节点名称，用于创建 hash 分组
     auto_names = []  # 收集自动分组名称，加入手选-azheng
 
     # 2. 获取并合并所有 NODE_URL（每个 URL 独立分组）
@@ -456,7 +413,6 @@ def main() -> None:
                     create_source_groups(base_config, source_name, added)
                     source_names.append(source_name)
                     all_proxy_names.extend(added)
-                    source_proxy_map[source_name] = added
                     auto_names.append(f"{source_name}-自动")
             except Exception as e:
                 print(f"    获取失败: {e}，跳过")
@@ -481,7 +437,6 @@ def main() -> None:
                 create_source_groups(base_config, "vless", added)
                 source_names.append("vless")
                 all_proxy_names.extend(added)
-                source_proxy_map["vless"] = added
                 auto_names.append("vless-自动")
 
     # 4. 获取并合并 v2ray 订阅链接
@@ -510,14 +465,12 @@ def main() -> None:
                 create_source_groups(base_config, "v2", added)
                 source_names.append("v2")
                 all_proxy_names.extend(added)
-                source_proxy_map["v2"] = added
                 auto_names.append("v2-自动")
 
-    # 5. 创建 hash 分组、统一分组和主分组
+    # 5. 创建统一分组和主分组
     print(f"\n[构建分组]")
-    hash_names = create_hash_groups(base_config, source_proxy_map)
-    create_unified_groups(base_config, all_proxy_names, hash_names, auto_names)
-    build_main_group(base_config, source_names, hash_names)
+    create_unified_groups(base_config, all_proxy_names, auto_names)
+    build_main_group(base_config, source_names)
 
     # 输出统计
     final_proxies = base_config.get("proxies", base_config.get("Proxy", []))
