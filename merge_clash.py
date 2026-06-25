@@ -361,8 +361,9 @@ def build_main_group(base: dict, source_names: list) -> None:
     # 移除已有的"节点选择"组（如果模板中存在）
     groups = [g for g in groups if g.get("name") != "节点选择"]
 
-    # 插入到最前面
-    groups.insert(0, {
+    # 追加到末尾，确保它引用的子分组（手选-azheng / 自动-azheng 等）
+    # 已经在前面定义，避免部分核心/校验器因顺序前向引用而报错。
+    groups.append({
         "name": "节点选择",
         "type": "select",
         "proxies": main_proxies,
