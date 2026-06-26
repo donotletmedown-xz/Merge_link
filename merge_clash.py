@@ -288,7 +288,7 @@ def create_source_groups(base: dict, source_name: str, proxy_names: list) -> str
         "name": auto_name,
         "type": "url-test",
         "url": "http://www.gstatic.com/generate_204",
-        "interval": 300,
+        "interval": 180,
         "tolerance": 30,
         "proxies": list(proxy_names),
     })
@@ -328,12 +328,22 @@ def create_unified_groups(base: dict, all_proxy_names: list, auto_names: list = 
         "name": "自动-azheng",
         "type": "url-test",
         "url": "http://www.gstatic.com/generate_204",
-        "interval": 300,
+        "interval": 180,
         "tolerance": 30,
         "proxies": list(all_proxy_names),
     })
 
-    print(f"  已创建统一分组: 手选-azheng ({len(select_proxies)} 个选项) / 自动-azheng ({len(all_proxy_names)} 个节点)")
+    # 兜底-azheng（fallback：自动-azheng 不可用时切到 DIRECT）
+    groups.append({
+        "name": "兜底-azheng",
+        "type": "fallback",
+        "url": "http://www.gstatic.com/generate_204",
+        "interval": 180,
+        "tolerance": 30,
+        "proxies": ["自动-azheng", "DIRECT"],
+    })
+
+    print(f"  已创建统一分组: 手选-azheng ({len(select_proxies)} 个选项) / 自动-azheng ({len(all_proxy_names)} 个节点) / 兜底-azheng")
 
     if "proxy-groups" in base:
         base["proxy-groups"] = groups
@@ -353,7 +363,7 @@ def build_main_group(base: dict, source_names: list) -> None:
 
     groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
 
-    main_proxies = ["DIRECT", "REJECT", "手选-azheng", "自动-azheng"]
+    main_proxies = ["DIRECT", "REJECT", "兜底-azheng", "手选-azheng", "自动-azheng"]
     for name in source_names:
         main_proxies.append(f"{name}-手选")
         main_proxies.append(f"{name}-自动")

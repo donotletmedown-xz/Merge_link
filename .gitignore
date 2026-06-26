@@ -8,3 +8,5 @@ node_url.yaml
 test.env
 merged_config2.yaml
 out*/
+.agents/
+.claude/
