@@ -354,6 +354,37 @@ def create_unified_groups(base: dict, all_proxy_names: list, auto_names: list = 
 
 
 
+def validate_group_references(base: dict) -> None:
+    """
+    校验所有 proxy-groups 中的 proxies 引用是否有效。
+    有效引用 = 存在于 proxies 列表中 或 是其他 group 的名称 或 是内置名称(DIRECT/REJECT)。
+    移除无效引用并打印警告。
+    """
+    proxies = base.get("proxies") or base.get("Proxy") or []
+    groups = base.get("proxy-groups") or base.get("ProxyGroup") or []
+
+    proxy_names = {p.get("name") for p in proxies if p.get("name")}
+    group_names = {g.get("name") for g in groups if g.get("name")}
+    builtin_names = {"DIRECT", "REJECT", "GLOBAL"}
+    valid_names = proxy_names | group_names | builtin_names
+
+    removed_total = 0
+    for group in groups:
+        gname = group.get("name", "?")
+        gproxies = group.get("proxies", [])
+        invalid = [ref for ref in gproxies if ref not in valid_names]
+        if invalid:
+            for ref in invalid:
+                print(f"  警告: 移除 {gname} 中的无效引用: {ref}")
+            group["proxies"] = [ref for ref in gproxies if ref in valid_names]
+            removed_total += len(invalid)
+
+    if removed_total:
+        print(f"  共移除 {removed_total} 个无效引用")
+    else:
+        print(f"  所有分组引用校验通过 ({len(groups)} 个分组, {len(proxy_names)} 个节点)")
+
+
 def build_main_group(base: dict, source_names: list) -> None:
     """
     构建"节点选择"主分组，包含 DIRECT、REJECT 和所有来源的手选/自动组。
@@ -482,6 +513,10 @@ def main() -> None:
     print(f"\n[构建分组]")
     create_unified_groups(base_config, all_proxy_names, auto_names)
     build_main_group(base_config, source_names)
+
+    # 校验分组引用
+    print(f"\n[校验]")
+    validate_group_references(base_config)
 
     # 输出统计
     final_proxies = base_config.get("proxies", base_config.get("Proxy", []))
